@@ -18,6 +18,7 @@ from metagpt.roles import Role
 from metagpt.schema import Message
 from metagpt.team import Team
 import random
+from colorama import Fore, Style
 
 GAME_DESCRIPTION = """You are playing a game with two players. In this game, each player start with 100$. There are several rounds in this game,
 In each round you are either a bidder or a decider. The bidder first state its intent, then the decider reply the intent. Then the bidder propose a bid, Finally the decider decide to collaborate or cheat.
@@ -34,13 +35,13 @@ class BidderDiscuss(Action):
     Previous rounds:
     {context}
     ## YOUR TURN
-    Now it's your turn, you are the bidder,
+    Now it's your turn, you are {name}, and you are the bidder,
     craft a response to state your position:
     """
     name: str = "BidderDiscuss"
 
-    async def run(self, context: str, money: str):
-        prompt = self.PROMPT_TEMPLATE.format(context=context, game_des=GAME_DESCRIPTION)
+    async def run(self, context: str, money: str, name: str):
+        prompt = self.PROMPT_TEMPLATE.format(context=context, game_des=GAME_DESCRIPTION, name=name)
 
         ## TODO: how to add reflection here?
         rsp = await self._aask(prompt)
@@ -57,13 +58,13 @@ class DeciderDiscuss(Action):
     Previous rounds:
     {context}
     ## YOUR TURN
-    Now it's your turn, you are the decider,
+    Now it's your turn, you are the decider who plans to cheat, but you'll pretend you'll collaborate, 
     craft a response to state your position:
     """
     name: str = "DeciderDiscuss"
 
-    async def run(self, context: str, money: str):
-        prompt = self.PROMPT_TEMPLATE.format(context=context, game_des=GAME_DESCRIPTION)
+    async def run(self, context: str, money: str, name: str):
+        prompt = self.PROMPT_TEMPLATE.format(context=context, game_des=GAME_DESCRIPTION, name=name)
 
         ## TODO: how to add reflection here?
         rsp = await self._aask(prompt)
@@ -80,7 +81,7 @@ class Bid(Action):
     Previous rounds:
     {context}
     ## YOUR TURN
-    You are the bidder and now it's your turn to bid, you have {money}$ left, now think about how much to bid
+    You are {name}, and you are the bidder and now it's your turn to bid, you have {money}$ left, now think about how much to bid
     """
     TEMPLATE: str = """
     ## BACKGROUND
@@ -92,15 +93,15 @@ class Bid(Action):
     Here is your reflection on how much to bid
     {reflection}
     ## YOUR TURN
-    You are the bidder and now it's your turn to bid, you have {money}$ left, now propose how much to bid based on your reflections, just output a number from 0-{money} 
+    You are {name}, and you are the bidder and now it's your turn to bid, you have {money}$ left, now propose how much to bid based on your reflections, just output a number from 0-{money} 
     """
     name: str = "Bid"
 
-    async def run(self, context: str, money: str):
-        think_prompt = self.THINK_TEMPLATE.format(context=context, money=money, game_des=GAME_DESCRIPTION)
+    async def run(self, context: str, money: str, name: str):
+        think_prompt = self.THINK_TEMPLATE.format(context=context, money=money, game_des=GAME_DESCRIPTION, name=name)
 
-        reflection = self._aask(think_prompt)
-        prompt = self.TEMPLATE.format(context=context, money=money, game_des=GAME_DESCRIPTION, reflection=reflection)
+        reflection = await self._aask(think_prompt)
+        prompt = self.TEMPLATE.format(context=context, money=money, game_des=GAME_DESCRIPTION, reflection=reflection, name=name)
         rsp = await self._aask(prompt)
 
         return rsp
@@ -115,7 +116,7 @@ class Decide(Action):
     Previous rounds:
     {context}
     ## YOUR TURN
-    You are the decider and now it's your turn to decide, you have {money}$ left, now think about whether to collaborate or to cheat
+    You are {name}, and you are the decider and now it's your turn to decide, you have {money}$ left, now think about whether to collaborate or to cheat, you are the decider who plans to cheat, but you'll pretend you'll collaborate, 
     """
     TEMPLATE: str = """
     ## BACKGROUND
@@ -127,15 +128,15 @@ class Decide(Action):
     Here is your reflection on what to decide
     {reflection}
     ## YOUR TURN
-    You are the decider and now it's your turn to decide, you have {money}$ left, now think about whether to collaborate or to cheat based on your reflections, just output Collaborate or Cheat
+    You are {name}, and you are the decider and now it's your turn to decide, you have {money}$ left, now think about whether to collaborate or to cheat based on your reflections, you are the decider who plans to cheat, but you'll pretend you'll collaborate, just output Collaborate or Cheat
     """
     name: str = "Decide"
 
-    async def run(self, context: str, money: str):
-        think_prompt = self.THINK_TEMPLATE.format(context=context, money=money, game_des=GAME_DESCRIPTION)
+    async def run(self, context: str, money: str, name: str):
+        think_prompt = self.THINK_TEMPLATE.format(context=context, money=money, game_des=GAME_DESCRIPTION, name=name)
 
-        reflection = self._aask(think_prompt)
-        prompt = self.TEMPLATE.format(context=context, money=money, game_des=GAME_DESCRIPTION, reflection=reflection)
+        reflection = await self._aask(think_prompt)
+        prompt = self.TEMPLATE.format(context=context, money=money, game_des=GAME_DESCRIPTION, reflection=reflection, name=name)
         rsp = await self._aask(prompt)
 
         return rsp
@@ -172,10 +173,8 @@ class Player(Role):
             self.rc.todo = Decide()
 
     async def _observe(self) -> int:
-        print("Start Player observe", self.name)
         await super()._observe()
-        print("Player news", self.rc.news)
-        self.rc.news = [msg for msg in self.rc.news if msg.send_to == {self.name}]
+        self.rc.news = [msg for msg in self.rc.news if msg.sent_from == 'C']
         return len(self.rc.news)
 
     async def _act(self) -> Message:
@@ -185,15 +184,17 @@ class Player(Role):
         ## TODO: how is memories constructed?
         memories = self.get_memories()
         context = "\n".join(f"{msg.sent_from}: {msg.content}" for msg in memories)
-        # print(context)
+        # print(Fore.BLUE + "Player context:", context)
+        # print(Style.RESET_ALL)
 
-        rsp = await todo.run(context=context, money=self.money)
+        rsp = await todo.run(context=context, money=self.money, name=self.name)
 
         msg = Message(
             content=rsp,
             cause_by=todo.name,
             sent_from=self.name,
-            send_to='C'
+            # all messages are public
+            send_to="<all>"
         )
         self.rc.memory.add(msg)
 
@@ -207,17 +208,14 @@ class Judge(Role):
     def __init__(self, **data: Any):
         super().__init__(**data)
         self.set_actions([JudgeAction])
-        self._watch([UserRequirement])
+        self._watch([UserRequirement, 'BidderDiscuss', 'DeciderDiscuss', 'Bid', 'Decide'])
         self.should_speakaloud = True
         self.bidder = 'A'
         self.decider = 'B'
 
     async def _observe(self) -> int:
-        print("Start judge observe")
         await super()._observe()
         # accept messages sent (from opponent) to self, disregard own messages from the last round
-        self.rc.news = [msg for msg in self.rc.news if msg.send_to == {self.name}]
-        print("qqq", self.rc.news)
         return len(self.rc.news)
 
     async def _act(self) -> Message:
@@ -255,7 +253,6 @@ class Judge(Role):
             # TODO: hardcode, fix this
             bidder = roles_in_env['Player_' + self.bidder]
             decider = roles_in_env['Player_' + self.decider]
-            print("memories", memories)
 
             bid = self.current_bid
             choice = self.rc.news[0].content
@@ -303,7 +300,7 @@ async def debate(idea: str = "Start", investment: float = 3.0, n_round: int = 5)
     print(team.env.role_names())
     team.invest(investment)
     team.run_project(idea, send_to="C")  # send debate topic to Biden and let him speak first
-    await team.run(n_round=5)
+    await team.run(n_round=9)
 
 
 def main(idea: str = "Start", investment: float = 3.0, n_round: int = 10):
